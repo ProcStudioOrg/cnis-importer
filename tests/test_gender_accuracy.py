@@ -66,7 +66,10 @@ def test_accuracy_against_real_cnis_names(capsys):
                 f"  {result['first_name']:20s} predicted={sexo} expected={expected} ({full_name})"
             )
 
-    assert total > 0, "Fixture parsed zero entries — check format"
+    assert total >= 50, (
+        f"Only {total} valid entries parsed from fixture — likely corrupt or truncated. "
+        f"Expected at least 50."
+    )
 
     wrong_rate = wrong / total
     abstain_rate = abstained / total
