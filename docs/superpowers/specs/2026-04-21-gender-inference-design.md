@@ -137,6 +137,39 @@ No exceptions raised by `infer_gender` for any string input. The data file is lo
 
 The data file used in tests is the real bundled `ibge_names.json` — no mocking. Tests serve as an integration check that the bundled data covers expected names. Specific test names above (PETRONILHA, ALQUEMAR, EDEMILSON) are illustrative — during implementation, verify each against the actual bundled data and swap any that aren't well-represented.
 
+### Accuracy validation against real CNIS names
+
+A separate test (`tests/test_gender_accuracy.py`) measures inference quality against a labeled fixture of real Brazilian CNIS names.
+
+**Fixture file:** `downloads/TESTS-GENDER` — gitignored (PII), maintained locally. Format is one entry per line:
+
+```
+ADEMAR FRANCISCO ROMAN (2330) - CNIS - 2025.03.pdf : m
+ALICE ALVES RODRIGUES (3316) - CNIS 2025.04.pdf : f
+DARCI PEGORARO (2133) - CNIS 2019.02.pdf : m
+```
+
+Parser rules:
+- Split each line on `:`. Right side is the label (`m` or `f`, case-insensitive, trimmed).
+- Left side: extract the leading uppercase name tokens before the first `(` — that's the full name. The `_first_name` helper from the inferrer takes the first token from there.
+- Lines that don't match this shape are skipped (with a count reported in the test output).
+
+**Label format:** `m` / `f` only. Mapped at test time: `m → "masculino"`, `f → "feminino"`. The fixture file is the source of truth and must use this format consistently — mixed `male`/`female` entries should be normalized to `m`/`f` before the test runs.
+
+**Test behavior:**
+- If the fixture file is absent (CI without local data), the test is **skipped** (not failed) so the rest of the suite still runs.
+- If present, the test runs every entry through `infer_gender()` and tallies three buckets:
+  - **correct:** inferred sex matches label
+  - **wrong:** inferred sex is opposite of label (false confidence — the dangerous bucket)
+  - **abstained:** inferred `indeterminado`
+
+**Pass thresholds** (test fails if any are violated):
+- `wrong / total < 0.02` — fewer than 2% confidently wrong
+- `abstained / total < 0.15` — fewer than 15% abstentions
+- `correct / (correct + wrong) > 0.95` — over 95% accuracy on names where we did decide
+
+The test prints the breakdown (counts + percentages) regardless of pass/fail, so a regression is immediately visible. Wrong cases are listed by name so the failure is actionable (e.g. "wrong on ARIEL: predicted masculino, expected feminino").
+
 ## Files touched
 
 **New:**
@@ -145,6 +178,7 @@ The data file used in tests is the real bundled `ibge_names.json` — no mocking
 - `app/data/__init__.py` — empty, makes it a package
 - `scripts/build_ibge_names.py` — one-off generator
 - `tests/test_gender_inferrer.py` — unit tests
+- `tests/test_gender_accuracy.py` — accuracy validation against `downloads/TESTS-GENDER`
 
 **Modified:**
 - `app/services/planilha_transformer.py` — fill `segurado.sexo` via inferrer
