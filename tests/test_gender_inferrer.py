@@ -108,3 +108,32 @@ class TestInferGender:
         c = gender_inferrer.infer_gender(" João ")
         d = gender_inferrer.infer_gender("JOAO")
         assert a == b == c == d
+
+
+class TestLazyLoad:
+    def test_load_raises_filenotfound_when_data_missing(self, monkeypatch, tmp_path):
+        # Reset the cached singleton and point at a nonexistent file.
+        monkeypatch.setattr(gender_inferrer, "_NAMES", None)
+        monkeypatch.setattr(gender_inferrer, "_DATA_PATH", tmp_path / "nope.json")
+        with pytest.raises(FileNotFoundError):
+            gender_inferrer.infer_gender("MARIA")
+
+    def test_load_caches_after_first_call(self, monkeypatch, tmp_path):
+        # Write a tiny data file, call twice, ensure file is opened only once.
+        data_file = tmp_path / "tiny.json"
+        data_file.write_text('{"MARIA": {"f": 100, "m": 0}}')
+        monkeypatch.setattr(gender_inferrer, "_NAMES", None)
+        monkeypatch.setattr(gender_inferrer, "_DATA_PATH", data_file)
+
+        open_calls = []
+        original_open = open
+        def counting_open(*args, **kwargs):
+            open_calls.append(args[0])
+            return original_open(*args, **kwargs)
+        monkeypatch.setattr("builtins.open", counting_open)
+
+        gender_inferrer.infer_gender("MARIA")
+        gender_inferrer.infer_gender("MARIA")
+
+        json_opens = [c for c in open_calls if str(c).endswith("tiny.json")]
+        assert len(json_opens) == 1
