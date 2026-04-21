@@ -43,3 +43,68 @@ class TestFirstName:
     def test_strips_leading_separators(self):
         assert _first_name("-CLARA SOUZA") == "CLARA"
         assert _first_name(" - MARIA") == "MARIA"
+
+
+class TestInferGender:
+    @pytest.fixture(autouse=True)
+    def stub_names(self, monkeypatch):
+        # Inject a controlled dataset for unit tests.
+        monkeypatch.setattr(gender_inferrer, "_NAMES", {
+            "MARIA": {"f": 11_200_000, "m": 5_400},
+            "JOAO": {"f": 1_200, "m": 2_900_000},
+            "ALQUEMAR": {"f": 12, "m": 487},
+            "DARCI": {"f": 4_800, "m": 5_100},   # ambiguous
+            "ARIEL": {"f": 2_000, "m": 3_000},   # ambiguous (60/40)
+        })
+
+    def test_confident_female(self):
+        r = gender_inferrer.infer_gender("MARIA SILVA")
+        assert r["sexo"] == "feminino"
+        assert r["confidence"] > 0.99
+        assert r["first_name"] == "MARIA"
+
+    def test_confident_male(self):
+        r = gender_inferrer.infer_gender("João da Silva")
+        assert r["sexo"] == "masculino"
+        assert r["confidence"] > 0.99
+        assert r["first_name"] == "JOAO"
+
+    def test_confident_male_regional(self):
+        r = gender_inferrer.infer_gender("ALQUEMAR DA SILVA VARGAS")
+        assert r["sexo"] == "masculino"
+        assert r["confidence"] >= 0.90
+
+    def test_ambiguous_50_50(self):
+        r = gender_inferrer.infer_gender("DARCI PEGORARO")
+        assert r["sexo"] == "indeterminado"
+        assert 0 < r["confidence"] < 0.90
+
+    def test_ambiguous_60_40(self):
+        r = gender_inferrer.infer_gender("ARIEL SOUZA")
+        assert r["sexo"] == "indeterminado"
+        assert 0 < r["confidence"] < 0.90
+
+    def test_unknown_name(self):
+        r = gender_inferrer.infer_gender("ZZNOTAREALNAME")
+        assert r["sexo"] == "indeterminado"
+        assert r["confidence"] == 0.0
+        assert r["first_name"] == "ZZNOTAREALNAME"
+
+    def test_empty_input(self):
+        r = gender_inferrer.infer_gender("")
+        assert r["sexo"] == "indeterminado"
+        assert r["confidence"] == 0.0
+        assert r["first_name"] == ""
+
+    def test_none_input(self):
+        r = gender_inferrer.infer_gender(None)
+        assert r["sexo"] == "indeterminado"
+        assert r["confidence"] == 0.0
+        assert r["first_name"] == ""
+
+    def test_normalization_consistency(self):
+        a = gender_inferrer.infer_gender("joão")
+        b = gender_inferrer.infer_gender("JOÃO")
+        c = gender_inferrer.infer_gender(" João ")
+        d = gender_inferrer.infer_gender("JOAO")
+        assert a == b == c == d
