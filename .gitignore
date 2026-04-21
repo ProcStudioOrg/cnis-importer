@@ -29,7 +29,7 @@ package-lock.json
 sensitive/
 sensitive-f2/
 downloads/
-specs/
+/specs/
 screenshots/
 
 # PDF files (may contain sensitive data)
@@ -37,6 +37,9 @@ screenshots/
 
 # Bruno - production environment (contains API keys)
 collection/**/environments/Production.bru
+
+# Build metadata (written by deploy)
+.build-info
 
 # Output/temp files
 *.json
