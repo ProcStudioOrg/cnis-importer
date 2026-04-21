@@ -48,7 +48,7 @@ def build(csv_path: Path, out_path: Path) -> None:
     skipped = 0
     rows = 0
 
-    with open(csv_path, encoding="utf-8") as f:
+    with open(csv_path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         required = {"nome", "sexo", "frequencia"}
         if not required.issubset({h.lower() for h in reader.fieldnames or []}):
