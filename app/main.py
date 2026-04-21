@@ -2,7 +2,8 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.routes import health, parse
+from app.routes import health, parse, version
+from app.version import VERSION
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -11,7 +12,7 @@ logging.basicConfig(
 
 app = FastAPI(
     title="CNIS Parser API",
-    version="1.0.0",
+    version=VERSION,
     description="Microserviço para extração de dados de CNIS (INSS) em PDF",
 )
 
@@ -24,4 +25,5 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(version.router)
 app.include_router(parse.router)

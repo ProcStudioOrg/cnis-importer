@@ -25,6 +25,10 @@ def transform_vinculo(emp: dict) -> dict:
         "fim": data.get("Fim") or "",
         "ultima_remuneracao": data.get("Ultima_Remu") or "",
         "indicadores": data.get("Indicadores") or "",
+        "beneficio": bool(data.get("Is_Beneficio")),
+        "nb": data.get("NB") or "",
+        "especie": data.get("Especie") or "",
+        "situacao": data.get("Situacao") or "",
         "remuneracoes": [
             {
                 "competencia": r.get("Competencia") or "",

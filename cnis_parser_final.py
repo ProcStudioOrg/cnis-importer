@@ -31,8 +31,13 @@ class CNISParserFinal:
             self._extract_employment_relationships(full_text)
         
         for emp in self.employment_relationships:
-            # Derive missing Fim date from last remuneration if available
-            if not emp['Data'].get('Fim') and emp.get('Remuneracoes'):
+            # Derive missing Fim date from last remuneration if available.
+            # Skip benefits: an INDEFERIDO/CESSADO benefit may have remunerações
+            # that predate or overlap it, so the last competência is not a
+            # reliable end-date for the benefit itself.
+            if (not emp['Data'].get('Fim')
+                    and emp.get('Remuneracoes')
+                    and not emp['Data'].get('Is_Beneficio')):
                 last_remu = emp['Remuneracoes'][-1]
                 comp = last_remu.get('Competencia', '')
                 if re.match(r'\d{2}/\d{4}', comp):
@@ -70,27 +75,30 @@ class CNISParserFinal:
                 self.personal_info[field_name] = None
     
     def _extract_employment_relationships(self, text: str):
-        seq_pattern = r'(?:^|\n)(\d+)\s+(\d{3}\.\d{5}\.\d{2}-\d)\s+([^\n]+)'
-        
         lines = text.split('\n')
         i = 0
-        
+
         while i < len(lines):
             line = lines[i]
-            
+
             match = re.match(r'^(\d+)\s+(\d{3}\.\d{5}\.\d{2}-\d)\s+(.+)', line)
             if match:
                 seq_num = int(match.group(1))
                 nit = match.group(2)
                 rest_of_line = match.group(3)
-                
-                employment_data = self._parse_employment_header(
-                    seq_num, nit, rest_of_line, lines, i
-                )
-                
+
+                if self._seq_row_is_beneficio(lines, i):
+                    employment_data = self._parse_beneficio_header(
+                        seq_num, nit, rest_of_line, lines, i
+                    )
+                else:
+                    employment_data = self._parse_employment_header(
+                        seq_num, nit, rest_of_line, lines, i
+                    )
+
                 if employment_data:
                     self.employment_relationships.append(employment_data)
-                    
+
                     i = self._parse_remuneracoes_after_header(
                         employment_data, lines, i + 1
                     )
@@ -98,6 +106,125 @@ class CNISParserFinal:
                     i += 1
             else:
                 i += 1
+
+    @staticmethod
+    def _seq_row_is_beneficio(lines: List[str], idx: int) -> bool:
+        """Classify a seq row by looking back to the nearest Seq. header line.
+
+        Benefit header has 'Espécie'/'Situação'; employment header has
+        'Código Emp.'/'Últ. Remun.'/'Matrícula'. We scan backwards because the
+        remunerações helper may advance past the header before the main loop
+        re-examines surrounding state.
+        """
+        for j in range(idx - 1, max(-1, idx - 40), -1):
+            ln = lines[j]
+            if 'Seq.' in ln and 'NIT' in ln:
+                if 'Espécie' in ln or 'Situação' in ln:
+                    return True
+                if 'Código Emp' in ln or 'Últ. Remun' in ln or 'Matrícula' in ln:
+                    return False
+        return False
+
+    # Known INSS benefit statuses. Expand as new ones are observed.
+    _SITUACAO_KEYWORDS = {
+        'CESSADO', 'DEFERIDO', 'INDEFERIDO', 'CONCEDIDO',
+        'ATIVO', 'SUSPENSO', 'CANCELADO',
+    }
+
+    def _parse_beneficio_header(self, seq: int, nit: str, rest_of_line: str,
+                                 lines: List[str], line_idx: int) -> Optional[Dict]:
+        """Parse a benefit row. Format:
+            NB  Benefício  <especie words ...>  [Data Início  Data Fim]  Situação
+        Espécie may wrap to a continuation line (e.g. 'CONTRIBUICAO' alone).
+        INDEFERIDO benefits typically have no dates.
+        """
+        try:
+            parts = rest_of_line.split()
+            if not parts:
+                return None
+
+            # NB is the first token (numeric, ~10 digits)
+            nb = parts[0] if re.match(r'^\d{6,}$', parts[0]) else ''
+            if nb:
+                parts = parts[1:]
+
+            # Skip the literal "Benefício" marker if present
+            if parts and parts[0].startswith('Benefíc'):
+                parts = parts[1:]
+
+            # Walk parts: accumulate Espécie tokens until we hit a date or a
+            # known Situação keyword.
+            especie_parts: List[str] = []
+            data_inicio = None
+            data_fim = None
+            situacao = ''
+
+            for part in parts:
+                if re.match(r'\d{2}/\d{2}/\d{4}$', part):
+                    if not data_inicio:
+                        data_inicio = part
+                    elif not data_fim:
+                        data_fim = part
+                elif part in self._SITUACAO_KEYWORDS:
+                    situacao = part
+                else:
+                    # Everything else is part of Espécie (pre-date or pre-situação)
+                    if not data_inicio and not situacao:
+                        especie_parts.append(part)
+
+            # Pull Espécie continuation from the next line if it looks like one
+            next_idx = line_idx + 1
+            if next_idx < len(lines):
+                next_line = lines[next_idx].strip()
+                if next_line and self._looks_like_especie_continuation(next_line):
+                    especie_parts.append(next_line)
+
+            especie = ' '.join(especie_parts).strip()
+
+            return {
+                'sequence': seq,
+                'Data': {
+                    'NIT': nit,
+                    'Codigo_Empresa': '',
+                    'Origem_Vinculo': 'Benefício',
+                    'Matricula_Trabalhador': '',
+                    'Tipo_Filiado_Vinculo': '',
+                    'Inicio': data_inicio,
+                    'Fim': data_fim,
+                    'Ultima_Remu': None,
+                    'Indicadores': '',
+                    'Is_Beneficio': True,
+                    'NB': nb,
+                    'Especie': especie,
+                    'Situacao': situacao,
+                },
+                'Remuneracoes': [],
+            }
+
+        except Exception as e:
+            if self.debug:
+                print(f"[ERROR] Failed to parse benefit header: {e}")
+            return None
+
+    @staticmethod
+    def _looks_like_especie_continuation(line: str) -> bool:
+        """Espécie wraps onto a short all-caps/alphabetic line — not a new
+        section, new seq row, or boilerplate."""
+        if not line or len(line) > 60:
+            return False
+        if re.match(r'^\d+\s+\d{3}\.\d{5}', line):
+            return False
+        banned_starts = (
+            'Seq.', 'Remunerações', 'Competência', 'Indicadores:', 'Matrícula',
+            'O INSS', 'Página', 'Tipo', 'NIT', 'CPF', 'Nome', 'Data de',
+            'Extrato', 'CNIS', 'Relações', 'Identificação',
+        )
+        if line.startswith(banned_starts):
+            return False
+        # Must be mostly letters (allow spaces, dashes, slashes)
+        if re.search(r'\d', line):
+            return False
+        return bool(re.match(r'^[A-ZÇÃÕÁÉÍÓÚÂÊÔÀ\s\-/]+$', line))
     
     def _parse_employment_header(self, seq: int, nit: str, rest_of_line: str,
                                   lines: List[str], line_idx: int) -> Optional[Dict]:
@@ -261,7 +388,11 @@ class CNISParserFinal:
                     'Inicio': data_inicio,
                     'Fim': data_fim,
                     'Ultima_Remu': ultima_remu,
-                    'Indicadores': indicadores
+                    'Indicadores': indicadores,
+                    'Is_Beneficio': False,
+                    'NB': '',
+                    'Especie': '',
+                    'Situacao': '',
                 },
                 'Remuneracoes': []
             }

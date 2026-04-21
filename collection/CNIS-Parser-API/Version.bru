@@ -1,0 +1,35 @@
+meta {
+  name: Version
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/version
+  body: none
+  auth: none
+}
+
+docs {
+  # Version
+
+  Returns the currently deployed version plus build metadata.
+
+  ## Response
+
+  ```json
+  {
+    "version": "1.0.0",
+    "git_sha": "a1b2c3d",
+    "built_at": "2026-04-19T12:34:56Z"
+  }
+  ```
+
+  - `version` — from the `VERSION` file (manually bumped per release).
+  - `git_sha` — short commit SHA written by the deploy workflow; `"dev"` locally.
+  - `built_at` — UTC timestamp of the last deploy; `null` locally.
+}
+
+settings {
+  encodeUrl: true
+}

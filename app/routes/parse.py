@@ -2,7 +2,7 @@ import time
 import logging
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
 from app.auth import verify_api_key
-from app.services.parser_service import parse_pdf, ParseError
+from app.services.parser_service import parse_pdf, ParseError, UnsupportedCNISError
 from app.services.response_transformer import transform_full, transform_summary
 from app.services.planilha_transformer import transform_to_planilha
 
@@ -42,6 +42,14 @@ def _parse_and_respond(content: bytes, transformer):
             "processing_time_ms": elapsed,
             "data": data,
         }
+    except UnsupportedCNISError as e:
+        elapsed = int((time.time() - start) * 1000)
+        raise HTTPException(status_code=422, detail={
+            "success": False,
+            "message": str(e),
+            "error_code": "UNSUPPORTED_CNIS_TYPE",
+            "processing_time_ms": elapsed,
+        })
     except ParseError as e:
         elapsed = int((time.time() - start) * 1000)
         raise HTTPException(status_code=422, detail={
