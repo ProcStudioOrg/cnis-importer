@@ -45,6 +45,7 @@ collection/**/environments/Production.bru
 *.json
 !requirements*.json
 !collection/**/bruno.json
+!app/data/ibge_names.json
 *.xlsx
 *.tmp
 *.log
