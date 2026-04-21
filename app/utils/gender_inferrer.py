@@ -1,5 +1,7 @@
 """Infer sex from a Brazilian given name using a bundled IBGE dataset."""
 
+from __future__ import annotations
+
 import json
 import re
 import unicodedata
@@ -22,5 +24,5 @@ def _first_name(nome: str | None) -> str:
     norm = _normalize(nome)
     if not norm:
         return ""
-    tokens = re.split(r"[\s\-]+", norm)
-    return tokens[0] if tokens and tokens[0] else ""
+    tokens = [t for t in re.split(r"[\s\-]+", norm) if t]
+    return tokens[0] if tokens else ""

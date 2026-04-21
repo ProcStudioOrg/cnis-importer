@@ -39,3 +39,7 @@ class TestFirstName:
 
     def test_handles_whitespace_only(self):
         assert _first_name("   ") == ""
+
+    def test_strips_leading_separators(self):
+        assert _first_name("-CLARA SOUZA") == "CLARA"
+        assert _first_name(" - MARIA") == "MARIA"
