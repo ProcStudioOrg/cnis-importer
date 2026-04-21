@@ -2,6 +2,7 @@
 
 import secrets
 from app.utils.type_mapper import map_tipo_filiado, is_beneficio
+from app.utils.gender_inferrer import infer_gender
 
 
 def _generate_uid():
@@ -90,6 +91,15 @@ def _should_park_in_analysis(periodo: dict) -> bool:
     return not periodo.get("inicio")
 
 
+def _infer_sexo_for_planilha(nome: str) -> str:
+    result = infer_gender(nome)
+    if result["sexo"] == "masculino":
+        return "masculino"
+    if result["sexo"] == "feminino":
+        return "feminino"
+    return ""
+
+
 def transform_to_planilha(parser_result: dict) -> dict:
     """Transform parser output to Planilha.spreadsheet_data schema.
 
@@ -108,7 +118,7 @@ def transform_to_planilha(parser_result: dict) -> dict:
         "segurado": {
             "cpf": personal.get("CPF") or "",
             "nome": personal.get("Nome") or "",
-            "sexo": "",  # CNIS does not contain sex
+            "sexo": _infer_sexo_for_planilha(personal.get("Nome") or ""),
             "dataDeNascimento": personal.get("Data_Nascimento") or "",
             "customerUuid": "",
         },
