@@ -24,12 +24,16 @@ class CNISParserFinal:
         
         with pdfplumber.open(self.pdf_path) as pdf:
             full_text = ""
+            pages_text = []
             for page in pdf.pages:
-                full_text += page.extract_text() + "\n"
-            
+                t = page.extract_text() or ""  # None on a page that fails OCR/extraction
+                pages_text.append(t)
+                full_text += t + "\n"
+
+            self.parse_validation = self._validate_page_completeness(pages_text)
             self._extract_personal_info(full_text)
             self._extract_employment_relationships(full_text)
-        
+
         for emp in self.employment_relationships:
             # Derive missing Fim date from last remuneration if available.
             # Skip benefits: an INDEFERIDO/CESSADO benefit may have remunerações
@@ -54,9 +58,69 @@ class CNISParserFinal:
             
         return {
             'personal_info': self.personal_info,
-            'employment_relationships': self.employment_relationships
+            'employment_relationships': self.employment_relationships,
+            'parse_validation': getattr(self, 'parse_validation', None),
         }
-    
+
+    def _validate_page_completeness(self, pages_text: List[str]) -> Dict:
+        """
+        Fallback safety net: verify EVERY page of the CNIS was extracted before
+        we trust the parsed contributions. The INSS stamps "Página X de Y" on
+        each page; we cross-check the declared total (Y) against the pages
+        pdfplumber actually returned and the page numbers visible in the text.
+
+        Any mismatch means the parse is INCOMPLETE — a page failed text
+        extraction (scanned/image CNIS), the PDF was truncated, or a page was
+        dropped — and downstream tempo de contribuição / carência counts would
+        be silently wrong. We surface this as `complete=False` + human-readable
+        `warnings` so the ProcStudio frontend can warn the user instead of
+        showing numbers built on partial data. When everything lines up,
+        `complete=True` and `warnings` is empty (no false alarms).
+        """
+        full = "\n".join(pages_text)
+        markers = re.findall(r'P[áa]gina\s+(\d+)\s+de\s+(\d+)', full)
+        seen = sorted({int(x) for x, _ in markers})
+        declared_total = max((int(y) for _, y in markers), default=None)
+        pages_in_pdf = len(pages_text)
+        empty_pages = [i + 1 for i, t in enumerate(pages_text) if not (t or '').strip()]
+
+        warnings: List[str] = []
+        complete = True
+
+        # We trust the page COUNT, not per-page header visibility: pdfplumber
+        # does not reliably re-extract the "Página X de Y" stamp on every page,
+        # so counting visible markers gives false alarms. The reliable signals
+        # are (a) declared total vs pages pdfplumber actually returned and
+        # (b) pages that yielded no text at all.
+        if declared_total is None:
+            complete = False
+            warnings.append(
+                "Não foi possível localizar a numeração de páginas (Página X de Y) "
+                "do CNIS; não dá para confirmar se todas as páginas foram lidas."
+            )
+        elif pages_in_pdf < declared_total:
+            complete = False
+            warnings.append(
+                f"O CNIS declara {declared_total} páginas, mas o arquivo contém "
+                f"apenas {pages_in_pdf}. O documento pode estar truncado — "
+                f"as contribuições das páginas faltantes não foram importadas."
+            )
+        if empty_pages:
+            complete = False
+            warnings.append(
+                f"Falha ao extrair texto das páginas {empty_pages} "
+                f"(CNIS escaneado/imagem?). Essas páginas não foram processadas."
+            )
+
+        return {
+            'complete': complete,
+            'pages_declared': declared_total,
+            'pages_in_pdf': pages_in_pdf,
+            'pages_seen': seen,
+            'empty_pages': empty_pages,
+            'warnings': warnings,
+        }
+
     def _extract_personal_info(self, text: str):
         patterns = {
             'NIT': r'NIT:\s*([\d\.\-]+)',
@@ -442,23 +506,27 @@ class CNISParserFinal:
                     self._parse_regular_remuneracao_line(employment, line)
             
             if line.startswith('O INSS poderá') or line.startswith('Página'):
-                return i
-            
+                i = self._skip_page_break(lines, i)
+                continue
+
             i += 1
-        
+
         return i
-    
+
     def _parse_regular_remuneracoes(self, employment: Dict, lines: List[str], start_idx: int) -> int:
         i = start_idx + 1
-        
+
         while i < len(lines):
             line = lines[i]
-            
+
             if re.match(r'^\d+\s+\d{3}\.\d{5}', line) or 'Seq.' in line:
                 return i
-            
-            if line.startswith('Matrícula') or line.startswith('O INSS'):
+
+            if line.startswith('Matrícula'):
                 return i
+            if line.startswith('O INSS') or line.startswith('Página'):
+                i = self._skip_page_break(lines, i)
+                continue
             
             if line.strip():
                 comp_remu_pattern = r'(\d{2}/\d{4})\s+([\d\.,]+)(?:\s+([A-Z\-]+(?:\s+[A-Z\-]+)*))?'
@@ -487,15 +555,18 @@ class CNISParserFinal:
             
             if re.match(r'^\d+\s+\d{3}\.\d{5}', line) or 'Seq.' in line:
                 return i
-            
-            if line.startswith('Matrícula') or line.startswith('O INSS'):
+
+            if line.startswith('Matrícula'):
                 return i
-            
+            if line.startswith('O INSS') or line.startswith('Página'):
+                i = self._skip_page_break(lines, i)
+                continue
+
             if line.strip() and re.match(r'\d{2}/\d{4}', line.strip()[:7]):
                 parts = line.split()
                 if len(parts) >= 2:
                     competencia = parts[0]
-                    
+
                     remuneracao_str = None
                     for part in reversed(parts):
                         if re.match(r'[\d\.,]+$', part) and (',' in part or '.' in part):
@@ -527,10 +598,13 @@ class CNISParserFinal:
             
             if re.match(r'^\d+\s+\d{3}\.\d{5}', line) or 'Seq.' in line:
                 return i
-            
-            if line.startswith('Matrícula') or line.startswith('O INSS'):
+
+            if line.startswith('Matrícula'):
                 return i
-            
+            if line.startswith('O INSS') or line.startswith('Página'):
+                i = self._skip_page_break(lines, i)
+                continue
+
             if line.strip() and re.match(r'\d{2}/\d{4}', line.strip()[:7]):
                 parts = line.split()
                 if len(parts) >= 3:
@@ -559,6 +633,33 @@ class CNISParserFinal:
         
         return i
     
+    def _skip_page_break(self, lines: List[str], i: int) -> int:
+        """
+        A remuneração table can continue across PDF page breaks. Each break
+        injects a footer ("O INSS poderá...") plus a repeated page header
+        (INSS / CNIS / Identificação / NIT / Relações Previdenciárias) in the
+        MIDDLE of the table. This skips that furniture and returns the index
+        where the table resumes — or the next vínculo header if the vínculo
+        really ended. Without this, parsing stopped at the first page break and
+        dropped every competência after page 1 (e.g. a CLT vínculo with ~220
+        monthly remunerações kept only ~30).
+        """
+        n = len(lines)
+        j = i + 1
+        while j < n:
+            stripped = lines[j].strip()
+            # Real boundary: next vínculo sequence header -> stop here.
+            if re.match(r'^\d+\s+\d{3}\.\d{5}\.\d{2}-\d', lines[j]):
+                return j
+            # Table resumes at a competência row (MM/YYYY ...).
+            if re.match(r'\d{2}/\d{4}', stripped[:7]):
+                return j
+            # Last line of the repeated page header; data resumes after it.
+            if stripped.startswith('Relações Previdenciárias'):
+                return j + 1
+            j += 1
+        return j
+
     def _parse_regular_remuneracao_line(self, employment: Dict, line: str):
         pass
     

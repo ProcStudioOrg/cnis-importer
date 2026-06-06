@@ -73,6 +73,7 @@ def transform_full(parser_result: dict) -> dict:
             "total_vinculos": len(vinculos),
             "total_remuneracoes": total_remus,
         },
+        "validacao": parser_result.get("parse_validation"),
     }
 
 
@@ -87,4 +88,5 @@ def transform_summary(parser_result: dict) -> dict:
             "total_vinculos": len(empls),
             "total_remuneracoes": sum(len(e.get("Remuneracoes", [])) for e in empls),
         },
+        "validacao": parser_result.get("parse_validation"),
     }

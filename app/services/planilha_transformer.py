@@ -136,4 +136,9 @@ def transform_to_planilha(parser_result: dict) -> dict:
         ],
         "activeTabUid": "tab-1",
         "config": {"mostrarRegrasPreReforma": False},
+        # Page-completeness safety net. Frontend should warn the user when
+        # `complete` is False (a page of the CNIS failed to parse, so the
+        # imported periods may be missing contributions). Omitted/None when
+        # the parser did not run validation.
+        "cnisValidacao": parser_result.get("parse_validation"),
     }
