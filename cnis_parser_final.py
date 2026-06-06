@@ -320,6 +320,11 @@ class CNISParserFinal:
                 codigo_emp = parts[0]
                 parts = parts[1:]
 
+            # "Indeterminado" aparece na coluna de código quando o empregador é
+            # pessoa física sem CNPJ — não faz parte do nome do vínculo.
+            if parts and parts[0] == 'Indeterminado':
+                parts = parts[1:]
+
             # Known employment type keywords
             TIPO_KEYWORDS = ['Empregado', 'Contribuinte', 'Facultativo', 'Segurado', 'Autônomo', 'Autonomo']
 
