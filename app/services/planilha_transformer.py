@@ -58,6 +58,17 @@ def _transform_periodo(seq: int, emp: dict) -> dict:
         meta["especie"] = (data.get("Especie") or "").strip()
         meta["situacao"] = data.get("Situacao") or ""
 
+    # Remunerações por competência: necessárias para detectar competências
+    # abaixo do mínimo (indicador PREC/PREM-MENOR-MIN) e, no futuro, RMI.
+    remuneracoes = [
+        {
+            "competencia": r.get("Competencia") or "",
+            "valor": r.get("Remuneracao"),
+            "indicadores": r.get("Indicadores") or "",
+        }
+        for r in emp.get("Remuneracoes", [])
+    ]
+
     return {
         "uid": _generate_uid(),
         "seq": seq,
@@ -73,6 +84,7 @@ def _transform_periodo(seq: int, emp: dict) -> dict:
         "indenizouRuralSeguradoEspecialApos31101991": False,
         "complementouAliquotaReduzida": False,
         "grauDeficiencia": None,
+        "remuneracoes": remuneracoes,
         "meta": meta,
     }
 

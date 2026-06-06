@@ -12,6 +12,17 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 
+# Indicador de competência: sigla MAIÚSCULA com hífen (PREC-MENOR-MIN,
+# PREM-EXT, IREM-INDPEND, IVIN-..., PSC-..., etc.). NÃO casa com CNPJ
+# (começa com dígito), "Normal", valores ou nomes de empresa sem hífen.
+_INDICADOR_RE = re.compile(r'^[A-Z]{2,}(?:-[A-Z0-9]+)+$')
+
+
+def _coleta_indicadores(parts: List[str]) -> str:
+    """Junta todos os tokens que parecem indicador de competência."""
+    return ' '.join(p for p in parts if _INDICADOR_RE.match(p))
+
+
 class CNISParserFinal:
     def __init__(self, pdf_path: str, debug: bool = False):
         self.pdf_path = Path(pdf_path)
@@ -573,12 +584,8 @@ class CNISParserFinal:
                             remuneracao_str = part
                             break
                     
-                    indicadores = ""
-                    for part in parts:
-                        if 'IREM' in part.upper():
-                            indicadores = part
-                            break
-                    
+                    indicadores = _coleta_indicadores(parts)
+
                     if remuneracao_str:
                         employment['Remuneracoes'].append({
                             'Competencia': competencia,
@@ -617,16 +624,13 @@ class CNISParserFinal:
                     
                     salario_contrib = currency_values[-1] if currency_values else None
                     
-                    indicadores = []
-                    for part in parts:
-                        if 'PREC' in part.upper() or 'MENOR' in part.upper() or 'INDPEND' in part.upper() or 'FACULT' in part.upper():
-                            indicadores.append(part)
-                    
+                    indicadores = _coleta_indicadores(parts)
+
                     if salario_contrib:
                         employment['Remuneracoes'].append({
                             'Competencia': competencia,
                             'Remuneracao': self._parse_currency(salario_contrib),
-                            'Indicadores': ', '.join(indicadores) if indicadores else ""
+                            'Indicadores': indicadores
                         })
             
             i += 1
