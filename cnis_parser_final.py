@@ -321,7 +321,7 @@ class CNISParserFinal:
                 parts = parts[1:]
 
             # Known employment type keywords
-            TIPO_KEYWORDS = ['Empregado', 'Contribuinte', 'Facultativo', 'Segurado']
+            TIPO_KEYWORDS = ['Empregado', 'Contribuinte', 'Facultativo', 'Segurado', 'Autônomo', 'Autonomo']
 
             tipo_found_at = None
             for idx, part in enumerate(parts):
@@ -412,6 +412,7 @@ class CNISParserFinal:
                             indicadores = ind_match.group(1).strip()
                     elif not next_line.startswith('Seq.') and not next_line.startswith('Remunerações') \
                          and not next_line.startswith('Competência') \
+                         and not next_line.startswith('Contribuições') \
                          and not re.match(r'^\d+\s+\d{3}\.\d{5}', next_line) \
                          and not next_line.startswith('O INSS') \
                          and not next_line.startswith('Página'):
@@ -431,6 +432,8 @@ class CNISParserFinal:
             if mat_match and not matricula:
                 matricula = mat_match.group(1)
             origem_str = re.sub(r'\s+\d{1,4}$', '', origem_str.strip())
+            # Remove cabeçalho de tabela que vaza para o nome ("Contribuições"/"Remunerações")
+            origem_str = re.sub(r'\s*(Contribuições|Remunerações)\s*$', '', origem_str, flags=re.IGNORECASE).strip()
             # Remove duplicate company name (e.g. "EMPRESÁRIO / EMPREGADOR EMPRESÁRIO / EMPREGADOR")
             if len(origem_str) > 20:
                 half = len(origem_str) // 2
