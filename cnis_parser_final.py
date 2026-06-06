@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 import json
+import unicodedata
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
@@ -38,6 +39,9 @@ class CNISParserFinal:
             pages_text = []
             for page in pdf.pages:
                 t = page.extract_text() or ""  # None on a page that fails OCR/extraction
+                # Normaliza acentos (NFC): alguns PDFs trazem ô/ã como caractere
+                # base + marca combinante, o que quebra comparações ("Autônomo").
+                t = unicodedata.normalize('NFC', t)
                 pages_text.append(t)
                 full_text += t + "\n"
 
@@ -320,9 +324,12 @@ class CNISParserFinal:
                 codigo_emp = parts[0]
                 parts = parts[1:]
 
-            # "Indeterminado" aparece na coluna de código quando o empregador é
-            # pessoa física sem CNPJ — não faz parte do nome do vínculo.
-            if parts and parts[0] == 'Indeterminado':
+            # "Indeterminado" é o valor da coluna "Código Emp." quando o
+            # empregador é pessoa física sem CNPJ — captura como código e tira
+            # do nome (não faz parte do Origem do Vínculo).
+            if parts and parts[0].lower() == 'indeterminado':
+                if not codigo_emp:
+                    codigo_emp = 'Indeterminado'
                 parts = parts[1:]
 
             # Known employment type keywords
@@ -335,8 +342,21 @@ class CNISParserFinal:
                     break
 
             if tipo_found_at is not None:
-                # Everything before the type keyword is the company name
-                origem_vinculo = parts[:tipo_found_at]
+                # Tudo antes do tipo é o nome — MAS em alguns layouts as datas
+                # (Data Início/Fim) aparecem antes do tipo; nesses casos elas
+                # pertencem às datas, não ao nome.
+                origem_vinculo = []
+                for part in parts[:tipo_found_at]:
+                    if re.match(r'\d{2}/\d{2}/\d{4}', part):
+                        if not data_inicio:
+                            data_inicio = part
+                        elif not data_fim:
+                            data_fim = part
+                    elif re.match(r'\d{2}/\d{4}$', part):
+                        if not ultima_remu:
+                            ultima_remu = part
+                    else:
+                        origem_vinculo.append(part)
 
                 # Collect type words (stop at dates)
                 tipo_parts = []
@@ -439,6 +459,18 @@ class CNISParserFinal:
             origem_str = re.sub(r'\s+\d{1,4}$', '', origem_str.strip())
             # Remove cabeçalho de tabela que vaza para o nome ("Contribuições"/"Remunerações")
             origem_str = re.sub(r'\s*(Contribuições|Remunerações)\s*$', '', origem_str, flags=re.IGNORECASE).strip()
+            # Tira data que vaza para o fim do nome (alguns layouts de segurado especial)
+            origem_str = re.sub(r'\s+\d{2}/\d{2}/\d{4}\s*$', '', origem_str).strip()
+            origem_str = re.sub(r'\s+\d{2}/\d{4}\s*$', '', origem_str).strip()
+            # Tira o tipo "Autônomo" duplicado no fim (origem == tipo). Compara
+            # sem acento/caixa para ser à prova de qualquer codificação de "ô".
+            _w = origem_str.split()
+            if len(_w) > 1:
+                _last = ''.join(
+                    c for c in unicodedata.normalize('NFD', _w[-1]) if unicodedata.category(c) != 'Mn'
+                ).lower()
+                if _last == 'autonomo':
+                    origem_str = ' '.join(_w[:-1]).strip()
             # Remove duplicate company name (e.g. "EMPRESÁRIO / EMPREGADOR EMPRESÁRIO / EMPREGADOR")
             if len(origem_str) > 20:
                 half = len(origem_str) // 2
