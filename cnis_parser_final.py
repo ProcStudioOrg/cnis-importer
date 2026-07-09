@@ -13,15 +13,58 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 
-# Indicador de competência: sigla MAIÚSCULA com hífen (PREC-MENOR-MIN,
-# PREM-EXT, IREM-INDPEND, IVIN-..., PSC-..., etc.). NÃO casa com CNPJ
-# (começa com dígito), "Normal", valores ou nomes de empresa sem hífen.
-_INDICADOR_RE = re.compile(r'^[A-Z]{2,}(?:-[A-Z0-9]+)+$')
+# Indicadores de vínculo/competência do CNIS — famílias oficiais do Anexo V
+# da Portaria DIRBEN/INSS 990/2022 (ver docs/cnis-indicadores.ts). Um token é
+# indicador quando é MAIÚSCULAS/dígitos/hífens E pertence a uma família
+# conhecida: ou é um código exato sem hífen (IREC, IEAN, PEXT...), ou começa
+# com "FAMILIA-" (IREC-LC123, PSE-POS...). Exigir o hífen após o prefixo
+# evita falsos positivos em nomes de empresa ("PRECO" não casa com "PREC").
+_INDICADOR_EXATOS = frozenset({
+    'IREC', 'IRECOL', 'IEAN', 'IDT', 'GFIP', 'NDET', 'PEXT', 'PRPPS',
+    'PRPSE', 'ACNISVR', 'ISALMIN', 'IMEI', 'ILEI123',
+})
+_INDICADOR_FAMILIAS = (
+    'IREM-', 'IREC-', 'IVIN-', 'ISE-', 'IAGRUP-', 'IUTILIZ-', 'ICED-',
+    'ICOMPL-', 'IVLR-', 'IREL-', 'IGFIP-', 'IEAN-',
+    'PREC-', 'PREM-', 'PVIN-', 'PADM-', 'PRES-', 'PEMP-', 'PSC-', 'PSE-',
+    'PDT-', 'PNIT-', 'PDIV-', 'PCTC-', 'PCEI-', 'PMOV-', 'PDESFAZ-', 'PSUC-',
+    'AEXT-', 'AVRC-', 'ASE-', 'ASEF-', 'ADIV-',
+)
+_INDICADOR_TOKEN_RE = re.compile(r'^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$')
+
+
+def _eh_indicador(token: str) -> bool:
+    return bool(_INDICADOR_TOKEN_RE.match(token)) and (
+        token in _INDICADOR_EXATOS or token.startswith(_INDICADOR_FAMILIAS))
 
 
 def _coleta_indicadores(parts: List[str]) -> str:
-    """Junta todos os tokens que parecem indicador de competência."""
-    return ' '.join(p for p in parts if _INDICADOR_RE.match(p))
+    """Junta os tokens que são indicadores, tolerando pontuação colada
+    (ex.: "AEXT-VT," em cabeçalhos de vínculo)."""
+    achados = []
+    for p in parts:
+        p = p.strip('.,;')
+        if _eh_indicador(p):
+            achados.append(p)
+    return ' '.join(achados)
+
+
+def _normaliza_linha_indicadores(texto: str) -> str:
+    """Normaliza o conteúdo de uma linha 'Indicadores: ...' para tokens
+    validados, separados por espaço. Se nada validar (layout inesperado),
+    preserva o texto bruto para não perder informação."""
+    tokens = _coleta_indicadores(texto.split())
+    return tokens if tokens else texto.strip()
+
+
+def _merge_indicadores(atual: str, novo: str) -> str:
+    """Acumula indicadores sem duplicar (vínculos podem ter mais de uma
+    linha 'Indicadores:', ex.: uma por matrícula)."""
+    toks = atual.split() if atual else []
+    for t in novo.split():
+        if t and t not in toks:
+            toks.append(t)
+    return ' '.join(toks)
 
 
 class CNISParserFinal:
@@ -372,8 +415,8 @@ class CNISParserFinal:
                     elif not data_inicio:
                         # Still collecting type before any date appears
                         tipo_parts.append(part)
-                    elif part.startswith(('IREM', 'IREC', 'PREC', 'PREM', 'ASE', 'AVRC', 'IVIN', 'PSC')):
-                        indicadores = part if not indicadores else indicadores + ' ' + part
+                    elif _eh_indicador(part.strip('.,;')):
+                        indicadores = _merge_indicadores(indicadores, part.strip('.,;'))
 
                 tipo_filiado = ' '.join(tipo_parts)
             else:
@@ -388,8 +431,8 @@ class CNISParserFinal:
                         ultima_remu = part
                     elif not data_inicio:
                         origem_vinculo.append(part)
-                    elif part.startswith(('IREM', 'IREC', 'PREC', 'PREM', 'ASE', 'AVRC', 'IVIN', 'PSC')):
-                        indicadores = part if not indicadores else indicadores + ' ' + part
+                    elif _eh_indicador(part.strip('.,;')):
+                        indicadores = _merge_indicadores(indicadores, part.strip('.,;'))
 
             origem_str = ' '.join(origem_vinculo)
 
@@ -434,7 +477,8 @@ class CNISParserFinal:
                     elif next_line.startswith('Indicadores:'):
                         ind_match = re.search(r'Indicadores:\s*(.+)', next_line)
                         if ind_match:
-                            indicadores = ind_match.group(1).strip()
+                            indicadores = _merge_indicadores(
+                                indicadores, _normaliza_linha_indicadores(ind_match.group(1)))
                     elif not next_line.startswith('Seq.') and not next_line.startswith('Remunerações') \
                          and not next_line.startswith('Competência') \
                          and not next_line.startswith('Contribuições') \
@@ -447,10 +491,11 @@ class CNISParserFinal:
                 # Check line after next for Indicadores
                 if next_line_idx + 1 < len(lines):
                     next_next = lines[next_line_idx + 1].strip()
-                    if next_next.startswith('Indicadores:') and not indicadores:
+                    if next_next.startswith('Indicadores:'):
                         ind_match = re.search(r'Indicadores:\s*(.+)', next_next)
                         if ind_match:
-                            indicadores = ind_match.group(1).strip()
+                            indicadores = _merge_indicadores(
+                                indicadores, _normaliza_linha_indicadores(ind_match.group(1)))
 
             # Clean trailing stray numbers from company name (matrícula fragments like "LTDA 1", "LTDA 235")
             mat_match = re.search(r'\s+(\d{1,4})$', origem_str.strip())
@@ -532,10 +577,12 @@ class CNISParserFinal:
                 i += 1
                 continue
             
-            if 'Indicadores:' in line and not employment['Data']['Indicadores']:
+            if 'Indicadores:' in line:
                 ind_match = re.search(r'Indicadores:\s*(.+)', line)
                 if ind_match:
-                    employment['Data']['Indicadores'] = ind_match.group(1).strip()
+                    employment['Data']['Indicadores'] = _merge_indicadores(
+                        employment['Data']['Indicadores'],
+                        _normaliza_linha_indicadores(ind_match.group(1)))
                 i += 1
                 continue
             
@@ -580,18 +627,21 @@ class CNISParserFinal:
                 continue
             
             if line.strip():
-                comp_remu_pattern = r'(\d{2}/\d{4})\s+([\d\.,]+)(?:\s+([A-Z\-]+(?:\s+[A-Z\-]+)*))?'
+                # Grupo 3: tokens MAIÚSCULA/dígito/hífen (IREC-LC123, PSC-MEN-SM-EC103),
+                # com vírgula opcional. Validados por _coleta_indicadores, que descarta
+                # palavras soltas que não pertencem a nenhuma família de indicador.
+                comp_remu_pattern = r'(\d{2}/\d{4})\s+([\d\.,]+)((?:\s+[A-Z][A-Z0-9\-]*,?)*)'
                 matches = list(re.finditer(comp_remu_pattern, line))
-                
+
                 for match in matches:
                     competencia = match.group(1)
                     remuneracao_str = match.group(2)
-                    indicadores = match.group(3) if match.group(3) else ""
-                    
+                    indicadores = _coleta_indicadores(match.group(3).split()) if match.group(3) else ""
+
                     employment['Remuneracoes'].append({
                         'Competencia': competencia,
                         'Remuneracao': self._parse_currency(remuneracao_str),
-                        'Indicadores': indicadores.strip() if indicadores else ""
+                        'Indicadores': indicadores
                     })
             
             i += 1
