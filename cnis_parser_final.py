@@ -92,6 +92,13 @@ class CNISParserFinal:
             self._extract_personal_info(full_text)
             self._extract_employment_relationships(full_text)
 
+            # Segunda passada, por coordenadas: células de "Indicadores" que
+            # quebram em duas linhas visuais saem do extract_text() como
+            # fragmentos órfãos acima/abaixo da linha da competência (e o
+            # texto linear não diz a qual coluna pertencem). Reconstrói cada
+            # célula pela posição x/y das palavras e enriquece as remunerações.
+            self._enriquece_indicadores_por_coordenadas(pdf)
+
         for emp in self.employment_relationships:
             # Derive missing Fim date from last remuneration if available.
             # Skip benefits: an INDEFERIDO/CESSADO benefit may have remunerações
@@ -610,6 +617,144 @@ class CNISParserFinal:
             i += 1
 
         return i
+
+    def _enriquece_indicadores_por_coordenadas(self, pdf) -> None:
+        """Reconstrói células de Indicadores quebradas em múltiplas linhas.
+
+        Usa as coordenadas das palavras: a linha de cabeçalho
+        "Competência Remuneração Indicadores" (repetida por coluna nos
+        layouts de 2-3 colunas) define as bandas x de cada coluna de
+        indicadores; cada fragmento em maiúsculas dentro de uma banda é
+        atribuído à competência mais próxima verticalmente na mesma banda.
+        O resultado só ACRESCENTA indicadores (nunca remove os já capturados
+        pela passada textual)."""
+        comp_re = re.compile(r'^\d{2}/\d{4}$')
+        frag_re = re.compile(r'^[A-Z][A-Z0-9\-,()]*,?$')
+        nit_re = re.compile(r'^\d{3}\.\d{5}\.\d{2}-\d$')
+        seq_map = {}  # (seq, competencia) -> 'IND1 IND2'
+        state = {'seq': None}
+        # Cabeçalhos de vínculo quebram em linhas visuais imprevisíveis, então
+        # o número do Seq. não é confiável por coordenadas. Em vez disso, cada
+        # palavra com formato de NIT marca um novo vínculo: a k-ésima
+        # ocorrência corresponde ao k-ésimo employment do parse textual
+        # (validado pela igualdade do NIT; divergência => sem enriquecimento
+        # até o próximo casamento).
+        emps = self.employment_relationships
+        emp_ptr = {'j': 0}
+
+        def avanca_vinculo(nit_texto):
+            j = emp_ptr['j']
+            for k in range(j, min(j + 3, len(emps))):
+                if emps[k]['Data'].get('NIT') == nit_texto:
+                    emp_ptr['j'] = k + 1
+                    return emps[k].get('sequence')
+            return None
+        # Por grupo de colunas g: comp_x[g] = x0 do header "Competência",
+        # ind_x[g] = x0 do header "Indicadores". A banda de indicadores do
+        # grupo g vai de ind_x[g] até comp_x[g+1] (ou a borda da página).
+        comp_xs, ind_bands = [], []
+        anchors = []  # (top, grupo, competencia)
+        frags = []    # (top, grupo, x0, texto)
+
+        def flush():
+            """Atribui cada fragmento à competência mais próxima (mesma banda)
+            e grava os tokens validados no mapa (seq, competência)."""
+            por_anchor = {}
+            for ftop, fgrupo, fx0, ftext in frags:
+                candidatos = [a for a in anchors if a[1] == fgrupo]
+                if not candidatos:
+                    continue
+                alvo = min(candidatos, key=lambda a: abs(a[0] - ftop))
+                if abs(alvo[0] - ftop) > 14:  # longe demais de qualquer linha
+                    continue
+                por_anchor.setdefault(alvo, []).append((ftop, fx0, ftext))
+            for (_, _, comp), fs in por_anchor.items():
+                texto = ' '.join(t for _, _, t in sorted(fs))
+                # rejunta código quebrado no wrap: "PSC-MEN-SM- EC103"
+                texto = re.sub(r'-\s+', '-', texto)
+                tokens = _coleta_indicadores(re.split(r'[,\s]+', texto))
+                if tokens and state['seq'] is not None:
+                    key = (state['seq'], comp)
+                    seq_map[key] = _merge_indicadores(seq_map.get(key, ''), tokens)
+            anchors.clear()
+            frags.clear()
+
+        def grupo_da_competencia(x0):
+            """Maior g cujo header 'Competência' está à esquerda de x0."""
+            g = None
+            for gi, cx in enumerate(comp_xs):
+                if x0 >= cx - 4:
+                    g = gi
+            return g
+
+        for page in pdf.pages:
+            try:
+                words = page.extract_words()
+            except Exception:
+                continue
+            # agrupa palavras em linhas visuais (tolerância de 3pt no top)
+            vlines = []
+            for w in sorted(words, key=lambda w: (w['top'], w['x0'])):
+                if vlines and w['top'] - vlines[-1][0] <= 3:
+                    vlines[-1][1].append(w)
+                else:
+                    vlines.append([w['top'], [w]])
+
+            for top, ws in vlines:
+                ws.sort(key=lambda w: w['x0'])
+                texts = [w['text'] for w in ws]
+                line_txt = ' '.join(texts)
+
+                if 'CPF:' not in line_txt:
+                    nit_w = next((w for w in ws if nit_re.match(w['text'])), None)
+                    if nit_w is not None:  # novo vínculo: fecha o anterior
+                        flush()
+                        state['seq'] = avanca_vinculo(nit_w['text'])
+                        continue
+                if line_txt.startswith('Legenda de Indicadores'):
+                    flush()
+                    state['seq'] = None
+                    continue
+
+                if 'Competência' in texts and 'Indicadores' in texts:
+                    # cabeçalho de tabela: recalcula colunas
+                    flush()
+                    comp_xs = [w['x0'] for w in ws if w['text'] == 'Competência']
+                    ind_xs = [w['x0'] for w in ws if w['text'] == 'Indicadores']
+                    ind_bands = []
+                    for gi, ix in enumerate(ind_xs):
+                        fim = comp_xs[gi + 1] if gi + 1 < len(comp_xs) else page.width
+                        # a célula pode começar à esquerda do título "Indicadores";
+                        # a coluna vizinha (Remuneração) só tem números, então a
+                        # folga de 30pt não captura nada indevido (frag_re exige
+                        # token MAIÚSCULO de família conhecida).
+                        ind_bands.append((ix - 30, fim - 4))
+                    continue
+
+                if not ind_bands or state['seq'] is None:
+                    continue
+
+                for w in ws:
+                    if comp_re.match(w['text']):
+                        g = grupo_da_competencia(w['x0'])
+                        if g is not None:
+                            anchors.append((top, g, w['text']))
+                    elif frag_re.match(w['text']):
+                        g = next((gi for gi, (x0, x1) in enumerate(ind_bands)
+                                  if x0 <= w['x0'] < x1), None)
+                        if g is not None:
+                            frags.append((top, g, w['x0'], w['text']))
+            flush()
+
+        if not seq_map:
+            return
+        for emp in self.employment_relationships:
+            seq = emp.get('sequence')
+            for remu in emp.get('Remuneracoes', []):
+                extra = seq_map.get((seq, remu.get('Competencia')))
+                if extra:
+                    remu['Indicadores'] = _merge_indicadores(
+                        remu.get('Indicadores', ''), extra)
 
     def _parse_regular_remuneracoes(self, employment: Dict, lines: List[str], start_idx: int) -> int:
         i = start_idx + 1
