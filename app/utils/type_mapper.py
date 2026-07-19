@@ -15,6 +15,9 @@ BENEFICIO_MAP = {
     "SALARIO MATERNIDADE": "SalarioMaternidade",
     "SALÁRIO MATERNIDADE": "SalarioMaternidade",
     "APOSENTADORIA POR INVALIDEZ": "AposentadoriaPorInvalidez",
+    # Espécie 32 aparece no CNIS também sem o "POR" ("APOSENTADORIA INVALIDEZ
+    # PREVIDENCIARIA") — sem esta entrada o período caía como vínculo comum.
+    "APOSENTADORIA INVALIDEZ": "AposentadoriaPorInvalidez",
     "INCAPACIDADE PERMANENTE": "AposentadoriaPorInvalidez",
     "AUXILIO ACIDENTE": "auxilioAcidente",
     "AUXÍLIO-ACIDENTE": "auxilioAcidente",
