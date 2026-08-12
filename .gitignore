@@ -50,3 +50,4 @@ collection/**/environments/Production.bru
 *.tmp
 *.log
 debug_output/
+.gstack/
