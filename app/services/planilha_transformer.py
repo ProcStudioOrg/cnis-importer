@@ -60,14 +60,19 @@ def _transform_periodo(seq: int, emp: dict) -> dict:
 
     # Remunerações por competência: necessárias para detectar competências
     # abaixo do mínimo (indicador PREC/PREM-MENOR-MIN) e, no futuro, RMI.
-    remuneracoes = [
-        {
+    # `contribuicao` (valor recolhido) só existe nas tabelas de recolhimento
+    # (facultativo, contribuinte individual, MEI): com ela a planilha calcula a
+    # alíquota efetivamente paga (5%, 11%, 20%).
+    remuneracoes = []
+    for r in emp.get("Remuneracoes", []):
+        remu = {
             "competencia": r.get("Competencia") or "",
             "valor": r.get("Remuneracao"),
             "indicadores": r.get("Indicadores") or "",
         }
-        for r in emp.get("Remuneracoes", [])
-    ]
+        if r.get("Contribuicao") is not None:
+            remu["contribuicao"] = r["Contribuicao"]
+        remuneracoes.append(remu)
 
     return {
         "uid": _generate_uid(),
