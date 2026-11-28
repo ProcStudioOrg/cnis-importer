@@ -57,6 +57,31 @@ def _normaliza_linha_indicadores(texto: str) -> str:
     return tokens if tokens else texto.strip()
 
 
+# Competência (MM/AAAA) que não é pedaço de uma data DD/MM/AAAA.
+_COMPETENCIA_RE = re.compile(r'(?<![\d/])\d{2}/\d{4}(?![\d/])')
+_VALOR_RE = re.compile(r'[\d\.,]+$')
+_DATA_RE = re.compile(r'\d{2}/\d{2}/\d{4}$')
+
+
+def _segmentos_por_competencia(line: str) -> List[List[str]]:
+    """Quebra uma linha de tabela em um segmento por competência.
+
+    O extrato imprime as tabelas de recolhimento em uma ou duas colunas lado
+    a lado; no texto linear as duas colunas saem na MESMA linha:
+
+        11/2011 17/11/2011 27,25 545,00 12/2011 21/12/2011 27,25 545,00
+
+    Cada segmento começa numa competência e vai até a próxima. Tratar a linha
+    inteira como uma competência só perdia a coluna da direita e colava os
+    indicadores dela na da esquerda."""
+    inicios = [m.start() for m in _COMPETENCIA_RE.finditer(line)]
+    return [line[a:b].split() for a, b in zip(inicios, inicios[1:] + [len(line)])]
+
+
+def _eh_valor(token: str) -> bool:
+    return bool(_VALOR_RE.match(token)) and (',' in token or '.' in token)
+
+
 def _merge_indicadores(atual: str, novo: str) -> str:
     """Acumula indicadores sem duplicar (vínculos podem ter mais de uma
     linha 'Indicadores:', ex.: uma por matrícula)."""
@@ -809,23 +834,15 @@ class CNISParserFinal:
                 continue
 
             if line.strip() and re.match(r'\d{2}/\d{4}', line.strip()[:7]):
-                parts = line.split()
-                if len(parts) >= 2:
-                    competencia = parts[0]
-
-                    remuneracao_str = None
-                    for part in reversed(parts):
-                        if re.match(r'[\d\.,]+$', part) and (',' in part or '.' in part):
-                            remuneracao_str = part
-                            break
-                    
-                    indicadores = _coleta_indicadores(parts)
-
-                    if remuneracao_str:
+                for parts in _segmentos_por_competencia(line):
+                    if len(parts) < 2:
+                        continue
+                    valores = [part for part in parts[1:] if _eh_valor(part)]
+                    if valores:
                         employment['Remuneracoes'].append({
-                            'Competencia': competencia,
-                            'Remuneracao': self._parse_currency(remuneracao_str),
-                            'Indicadores': indicadores
+                            'Competencia': parts[0],
+                            'Remuneracao': self._parse_currency(valores[-1]),
+                            'Indicadores': _coleta_indicadores(parts)
                         })
             
             i += 1
@@ -848,25 +865,27 @@ class CNISParserFinal:
                 continue
 
             if line.strip() and re.match(r'\d{2}/\d{4}', line.strip()[:7]):
-                parts = line.split()
-                if len(parts) >= 3:
-                    competencia = parts[0]
-                    
-                    currency_values = []
-                    for part in parts[1:]:
-                        if re.match(r'[\d\.,]+$', part) and (',' in part or '.' in part):
-                            currency_values.append(part)
-                    
-                    salario_contrib = currency_values[-1] if currency_values else None
-                    
-                    indicadores = _coleta_indicadores(parts)
-
-                    if salario_contrib:
-                        employment['Remuneracoes'].append({
-                            'Competencia': competencia,
-                            'Remuneracao': self._parse_currency(salario_contrib),
-                            'Indicadores': indicadores
-                        })
+                # Colunas: Competência | Data Pgto. | Contribuição | Salário
+                # Contribuição | Indicadores — uma ou duas vezes por linha.
+                for parts in _segmentos_por_competencia(line):
+                    if len(parts) < 3:
+                        continue
+                    valores = [part for part in parts[1:] if _eh_valor(part)]
+                    if not valores:
+                        continue
+                    remu = {
+                        'Competencia': parts[0],
+                        'Remuneracao': self._parse_currency(valores[-1]),
+                        'Indicadores': _coleta_indicadores(parts)
+                    }
+                    # Valor recolhido: só quando a linha traz as duas colunas
+                    # de valor (Contribuição e Salário Contribuição).
+                    if len(valores) >= 2:
+                        remu['Contribuicao'] = self._parse_currency(valores[-2])
+                    data_pgto = next((part for part in parts[1:] if _DATA_RE.match(part)), None)
+                    if data_pgto:
+                        remu['Data_Pagamento'] = data_pgto
+                    employment['Remuneracoes'].append(remu)
             
             i += 1
         
